@@ -19,8 +19,13 @@
  * accenttekens meer), maar bij het toevoegen van nieuwe tekst met accenten
  * of andere speciale tekens is UTF-8 opslaan nog steeds belangrijk.
  *
- * Version: 5.0
+ * Version: 5.1
  * Author: Mediamora
+ *
+ * Wijzigingen t.o.v. 5.0:
+ * - Geen functionele wijziging. Testrelease om te bevestigen dat de
+ *   GitHub-updateketen end-to-end werkt (tag aanmaken → wp-admin toont
+ *   "Update beschikbaar" → 1-klik-update).
  *
  * Wijzigingen t.o.v. 4.6:
  * - Omgezet van mu-plugin naar een normale, activeerbare plugin met
