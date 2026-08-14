@@ -19,8 +19,30 @@
  * accenttekens meer), maar bij het toevoegen van nieuwe tekst met accenten
  * of andere speciale tekens is UTF-8 opslaan nog steeds belangrijk.
  *
- * Version: 5.1
+ * Version: 5.3
  * Author: Mediamora
+ *
+ * Wijzigingen t.o.v. 5.2:
+ * - BUGFIX: het case-wisselings-signaal (onderdeel van de gibberish-
+ *   detectie) telde voorheen over de hele waarde met spaties eruit
+ *   gehaald, waardoor elke tekst met meerdere eigennamen of meerdere
+ *   zinnen (elk startend met een hoofdletter) onterecht signalen kon
+ *   opleveren, bijvoorbeeld "Via Petra de Krom" of een langer bericht
+ *   met een naam erin. Telt nu per los woord, en alleen een hoofdletter
+ *   op een onverwachte plek BINNEN een woord (niet gewoon vooraan)
+ *   telt nog mee. Bot-detectie (bijv. "RwbMpwmgIiYRyvjukmcm") blijft
+ *   onaangetast, dat wijkt nog steeds af van elk normaal patroon.
+ *
+ * Wijzigingen t.o.v. 5.1:
+ * - BELANGRIJKE CORRECTIE: de "inzending:"-status in de vangnet-mail
+ *   beweerde eerder "inzending als geheel geaccepteerd", maar dat is
+ *   niet iets wat deze plugin daadwerkelijk kan weten. Elementor Pro
+ *   heeft een eigen, aparte honeypot-bescherming die volledig los van
+ *   deze plugin kan ingrijpen: een inzending kan door al onze checks
+ *   heen komen en alsnog nergens in Elementor's Inzendingen-lijst
+ *   terechtkomen, zonder dat wij dat kunnen zien of loggen. De status
+ *   zegt nu alleen nog eerlijk "door al onze eigen checks heen" i.p.v.
+ *   een claim over de definitieve uitkomst.
  *
  * Wijzigingen t.o.v. 5.0:
  * - Geen functionele wijziging. Testrelease om te bevestigen dat de
@@ -376,7 +398,7 @@ function mediamora_antispam_render_settings_page() {
 			</table>
 
 			<h2>Vangnet voor mogelijk gemiste spam</h2>
-			<p class="description">Waarschuwt bij individuele VELDEN die net niet werden geweigerd, maar verdacht dicht bij een drempel zaten. De mail geeft ook aan of de bijbehorende hele inzending uiteindelijk toch (door een ander veld) is geweigerd, of gewoon is doorgekomen. Dit is een heuristiek: het vangt twijfelgevallen, geen garantie op elke gemiste spamvorm. Draait onafhankelijk van de rapportmail hierboven.</p>
+			<p class="description">Waarschuwt bij individuele VELDEN die net niet werden geweigerd, maar verdacht dicht bij een drempel zaten. De mail geeft ook aan of een ander veld door ONZE checks alsnog werd geweigerd. Let op: als dat niet zo is, betekent dat niet automatisch dat de inzending ook echt in je Elementor Inzendingen-lijst staat, Elementor Pro heeft een eigen honeypot-bescherming die hier los van kan ingrijpen. Dit is sowieso een heuristiek: het vangt twijfelgevallen, geen garantie op elke gemiste spamvorm. Draait onafhankelijk van de rapportmail hierboven.</p>
 			<table class="form-table" role="presentation">
 				<tr>
 					<th scope="row">Waarschuwing bij twijfelgevallen</th>
@@ -628,15 +650,18 @@ function mediamora_antispam_validate_form( $record, $ajax_handler ) {
 		}
 	}
 
-	// Nu pas de verzamelde near-misses loggen, met de uiteindelijke status
-	// van de hele inzending erbij, zodat "geaccepteerd" in de vangnet-mail
-	// ook echt betekent dat de hele inzending is doorgekomen, niet alleen
-	// dit ene veld.
+	// Nu pas de verzamelde near-misses loggen, met de status van ONZE
+	// EIGEN checks erbij. Let op: dit zegt alleen iets over wat DEZE
+	// plugin heeft gedaan. Elementor Pro heeft een eigen, aparte
+	// honeypot-bescherming die volledig buiten onze code om kan
+	// ingrijpen: een inzending kan dus "door onze checks heen" komen en
+	// alsnog nergens terechtkomen omdat Elementor's eigen mechanisme hem
+	// zelfstandig heeft geweigerd. Dit kunnen wij niet zien of loggen.
 	if ( ! empty( $near_misses ) ) {
 
 		$status = $submission_rejected
-			? 'inzending als geheel WEL geweigerd (ander veld sloeg aan)'
-			: 'inzending als geheel geaccepteerd';
+			? 'door een ander veld alsnog geweigerd door ONZE checks'
+			: 'door al onze eigen checks heen (zegt niets over Elementor\'s eigen honeypot of andere maatregelen, die hier los van kunnen ingrijpen)';
 
 		foreach ( $near_misses as $near_miss ) {
 			mediamora_antispam_nearmiss_log( $near_miss['id'], $near_miss['type'], $near_miss['value'], $near_miss['reasons'], $status );
@@ -923,15 +948,55 @@ function mediamora_gibberish_score( $value ) {
 	$vowels      = preg_match_all( '/[aeiouAEIOU\x{00C0}-\x{00D6}\x{00D8}-\x{00F6}\x{00F8}-\x{00FF}]/u', $letters_only );
 	$vowel_ratio = $vowels / $length;
 
+	// Case-wisselingen PER WOORD tellen, niet over de hele tekst met
+	// spaties eruit gehaald. Reden: als je spaties weghaalt en dan telt,
+	// wordt elke overgang tussen twee keurig geschreven eigennamen of
+	// zinnen ("Via Petra de Krom", of een bericht met meerdere zinnen)
+	// ook als "wisseling" geteld, terwijl dat normale Titel-Case is. Een
+	// los woord dat volledig kleine letters, volledig hoofdletters
+	// (acroniem), of Titel-Case is (1 hoofdletter vooraan, rest klein)
+	// is normaal en telt niet mee. Alleen een hoofdletter/kleine-letter-
+	// wisseling op een onverwachte plek BINNEN een woord (zoals bij
+	// bot-tekst) telt als signaal.
 	$transitions = 0;
-	$prev_upper  = null;
-	for ( $i = 0; $i < $length; $i++ ) {
-		$char     = mb_substr( $letters_only, $i, 1 );
-		$is_upper = ( $char === mb_strtoupper( $char ) && $char !== mb_strtolower( $char ) );
-		if ( null !== $prev_upper && $is_upper !== $prev_upper ) {
-			$transitions++;
+	$upper_class  = 'A-Z\x{00C0}-\x{00D6}\x{00D8}-\x{00DE}';
+	$lower_class  = 'a-z\x{00E0}-\x{00F6}\x{00F8}-\x{00FF}';
+	foreach ( preg_split( '/\s+/', $value ) as $word ) {
+
+		$word_letters = preg_replace( '/[^A-Za-z\x{00C0}-\x{00D6}\x{00D8}-\x{00F6}\x{00F8}-\x{00FF}]/u', '', $word );
+		$word_length  = mb_strlen( $word_letters );
+
+		if ( $word_length < 2 ) {
+			continue; // te kort om iets te zeggen
 		}
-		$prev_upper = $is_upper;
+
+		if ( preg_match( '/^[' . $lower_class . ']+$/u', $word_letters ) ) {
+			continue; // helemaal kleine letters
+		}
+
+		if ( preg_match( '/^[' . $upper_class . ']+$/u', $word_letters ) ) {
+			continue; // helemaal hoofdletters, acroniem
+		}
+
+		$first_char = mb_substr( $word_letters, 0, 1 );
+		$rest       = mb_substr( $word_letters, 1 );
+
+		if ( preg_match( '/^[' . $upper_class . ']$/u', $first_char ) && preg_match( '/^[' . $lower_class . ']+$/u', $rest ) ) {
+			continue; // normale Titel-Case: "Petra", "Krom", "Hetty"
+		}
+
+		// Dit woord wijkt af van elk normaal patroon: tel de daadwerkelijke
+		// wisselingen binnenin (los van de eerste letter, een hoofdletter
+		// vooraan is immers altijd normaal).
+		$prev_upper = null;
+		for ( $i = 0; $i < $word_length; $i++ ) {
+			$char     = mb_substr( $word_letters, $i, 1 );
+			$is_upper = ( $char === mb_strtoupper( $char ) && $char !== mb_strtolower( $char ) );
+			if ( null !== $prev_upper && $is_upper !== $prev_upper ) {
+				$transitions++;
+			}
+			$prev_upper = $is_upper;
+		}
 	}
 
 	$has_natural_structure = (bool) preg_match( '/[\s,.!?\'"-]/', $value );
@@ -1364,7 +1429,7 @@ function mediamora_antispam_maybe_send_nearmiss_alert() {
 	$body  = sprintf(
 		"Let op: %d veld(en) in je Elementor formulier(en) zaten verdacht dicht bij een weigeringsdrempel, zonder dat dit specifieke veld zelf werd geweigerd.\n\n" .
 		"Dit kan wijzen op spam die net niet werd gevangen (een mogelijk vals negatief), maar kan net zo goed een volkomen legitieme inzending zijn die toevallig ongewone kenmerken had. Dit is een heuristiek, geen harde constatering, dus check dit met een kritische blik.\n\n" .
-		"Let op het onderdeel \"inzending:\" per regel hieronder: dat geeft aan of de HELE inzending (dus alle velden samen) uiteindelijk toch is geweigerd omdat een ander veld wel aansloeg, of dat de inzending als geheel is geaccepteerd en dus in je Elementor Inzendingen-lijst staat.\n\n",
+		"Let op het onderdeel \"inzending:\" per regel hieronder: dat geeft alleen aan of een ANDER veld door ONZE eigen checks alsnog is geweigerd. Als dat niet zo was, betekent dat NIET automatisch dat de inzending ook echt in je Elementor Inzendingen-lijst staat: Elementor Pro heeft een eigen, aparte honeypot-bescherming die volledig los van deze plugin kan ingrijpen, en dat kunnen wij niet zien of loggen. Check dus in twijfelgevallen altijd zelf even in Elementor of de inzending er daadwerkelijk staat.\n\n",
 		$count
 	);
 	$body .= "Details:\n\n";
