@@ -4,7 +4,7 @@ Tags: elementor, anti-spam, forms
 Requires at least: 6.0
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 5.3
+Stable tag: 5.4
 License: GPLv2 or later
 
 Weigert Elementor Pro formulier-inzendingen op basis van meerdere signalen: link injection, onleesbare tekst, niet-Latijns schrift, herhaalde trefwoorden, dubbele inhoud, verkorte/wegwerp-links, boekingslinks en vermelding van de eigen domeinnaam.
@@ -26,6 +26,21 @@ Instellingen: wp-admin > Instellingen > Mediamora Anti-Spam.
    wp-admin > Instellingen > Mediamora Anti-Spam
 
 == Changelog ==
+
+= 5.4 =
+* Verwijderd: de structurele herkenning van onbekende verkorte-URL-diensten
+  (toegevoegd in 4.4). Die heeft nooit gewerkt: het regex-patroon gebruikte
+  '#' als delimiter en bevatte zelf een niet-ontsnapte '#', waardoor
+  preg_match_all() bij elke aanroep faalde en een warning naar de errorlog
+  schreef. Bij reparatie bleek hij ook normale links te weigeren (7 van 12
+  legitieme test-URL's, waaronder /2024, /Contact en /ORD1234), dus in
+  plaats van repareren is de check eruit gehaald.
+* De lijst met bekende verkorters is ongewijzigd en werkt gewoon; die zat
+  in een apart patroon en is nooit door de bug geraakt. Onbekende
+  verkorters glippen er nu bewust doorheen: liever een gemiste spammail
+  dan een gemiste klant. Kom je er een tegen, zet de domeinnaam op de lijst.
+* Uitlegtekst op het instellingenscherm aangepast, die beloofde nog de
+  structurele herkenning.
 
 = 5.3 =
 * Bugfix: case-wisselings-signaal telt nu per woord i.p.v. over de hele

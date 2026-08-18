@@ -19,8 +19,39 @@
  * accenttekens meer), maar bij het toevoegen van nieuwe tekst met accenten
  * of andere speciale tekens is UTF-8 opslaan nog steeds belangrijk.
  *
- * Version: 5.3
+ * Version: 5.4
  * Author: Mediamora
+ *
+ * Wijzigingen t.o.v. 5.3:
+ * - VERWIJDERD: de structurele herkenning van onbekende verkorters in
+ *   mediamora_contains_shortened_url(). Twee redenen.
+ *
+ *   (a) Hij heeft nooit gewerkt. Het patroon gebruikte '#' als delimiter
+ *       en bevatte zelf een niet-ontsnapte '#' in de lookahead
+ *       "(?=[?#]|$|\s)". PHP kapte het patroon daar af en las de rest als
+ *       modifiers, waardoor preg_match_all() bij elke aanroep false gaf
+ *       en een warning "Unknown modifier ']'" naar de errorlog schreef.
+ *       Dit is dezelfde klasse stille storing als de encoding-bug uit 2.x:
+ *       geen zichtbare fout, alleen een check die niets meer doet.
+ *
+ *   (b) Repareren bleek geen verbetering. Zodra de delimiter goed staat
+ *       gaat de regel wel draaien, en dan raakt hij ook normale links.
+ *       Getest tegen twaalf legitieme URLs: zeven werden geweigerd,
+ *       waaronder voorbeeld.nl/2024, praktijk.nl/Contact en
+ *       webshop.nl/ORD1234. Een treffer betekent directe weigering van de
+ *       hele inzending zonder near-miss-logging, dus die lead is weg.
+ *       Dat risico weegt niet op tegen de winst.
+ *
+ *   De lijst met bekende verkorters blijft ongewijzigd en werkt gewoon;
+ *   die zit in een apart patroon en is nooit door deze bug geraakt.
+ *   Onbekende verkorters glippen er nu bewust doorheen. Bewuste keuze:
+ *   liever een gemiste spammail dan een gemiste klant.
+ *
+ *   Als dit ooit terugkomt: eis dan dat de code zowel een hoofdletter,
+ *   een kleine letter ALS een cijfer bevat (dus "aB3x9" wel, "2024",
+ *   "Blog", "ORD1234" en "nieuws2024" niet). Dat gaf in de test 7/7 spam
+ *   gevangen bij 0/12 onterechte weigeringen. En gebruik '~' als
+ *   delimiter, niet '#'.
  *
  * Wijzigingen t.o.v. 5.2:
  * - BUGFIX: het case-wisselings-signaal (onderdeel van de gibberish-
@@ -437,7 +468,7 @@ function mediamora_antispam_render_settings_page() {
 					<th scope="row">Verkorte URLs &amp; wegwerp-linkdiensten</th>
 					<td>
 						<label><input type="checkbox" name="reject_shortened_urls" value="1" <?php checked( $s['reject_shortened_urls'] ); ?>> Weiger berichten met verkorte URLs of bekende wegwerp-linkdiensten (bit.ly, tinyurl, psee.io, telegra.ph, enz.)</label>
-						<p class="description">Vangt bekende diensten (op naam) én onbekende verkorters via een structureel kenmerk: een kort URL-pad met cijfers/hoofdletters erin (zoals "/DYm8Ld") is typisch voor een gegenereerde verkorter-code. Kanttekening: dit kan zelden een legitieme URL raken die toevallig een cijfer in het laatste paddeel heeft (bijv. "/actie2026").</p>
+						<p class="description">Werkt op een vaste lijst van bekende diensten, die op naam herkend worden. Onbekende of nieuwe verkorters glippen er dus doorheen: dat is sinds 5.4 een bewuste keuze, omdat de vorige structurele herkenning te veel gewone links raakte (een pagina als "/Contact" of "/2024" werd dan ook geweigerd). Kom je een verkorter tegen die er telkens doorheen komt, geef de domeinnaam dan door zodat hij aan de lijst kan.</p>
 					</td>
 				</tr>
 				<tr>
@@ -677,26 +708,13 @@ function mediamora_antispam_validate_form( $record, $ajax_handler ) {
  * zich hetzelfde als een verkorte URL: het is altijd een wegwerp-link,
  * nooit iemands eigen site, dus dezelfde lijst en logica.
  *
- * Op twee manieren:
- *
- * 1. Een lijst met bekende diensten. Dit is nooit compleet, spammers
- *    duiken steeds op met nieuwe/minder bekende diensten.
- * 2. Daarom ook een STRUCTURELE herkenning die niet van de naam van de
- *    dienst afhangt: een URL-pad dat bestaat uit precies één kort
- *    alfanumeriek stukje met cijfers en/of hoofdletters erin
- *    (bijvoorbeeld "/DYm8Ld", "/sbRhA") is typisch voor hoe
- *    verkorters hun codes genereren. Een normaal, door een mens
- *    geschreven URL-pad ("/contact", "/diensten") bestaat vrijwel
- *    altijd uit gewone kleine letters. Dit vangt dus ook onbekende of
- *    nieuwe verkorters, zonder dat we de naam hoeven te kennen. Let op:
- *    dit vangt GEEN diensten zoals telegra.ph met een lang, beschrijvend
- *    pad, die moeten dus met naam op de lijst staan.
- *
- *    Kanttekening: dit kan in theorie een legitieme URL raken die
- *    toevallig een cijfer in het laatste pad-segment heeft (bijvoorbeeld
- *    "voorbeeld.nl/actie2026"). Dat risico wordt zo klein mogelijk
- *    gehouden door een kort segment (4-10 tekens) te vereisen zonder
- *    verdere sub-paden, maar is niet volledig uit te sluiten.
+ * Werkt met een lijst van bekende diensten. Die lijst is per definitie
+ * nooit compleet: spammers duiken steeds op met nieuwe of minder bekende
+ * verkorters, en die glippen er dus doorheen. Dat is sinds 5.4 een
+ * bewuste keuze. Er zat eerder een structurele herkenning bij die niet
+ * van de naam afhing, maar die was kapot en bleek bij reparatie te veel
+ * legitieme links te raken. Zie de changelog bij 5.4 in de header voor
+ * de meetgegevens en voor de voorwaarde waaronder hij terug zou kunnen.
  *
  * Elke (mogelijke) verkorte/misbruikte URL verdient direct afkeuring,
  * ongeacht het aantal.
@@ -739,23 +757,7 @@ function mediamora_contains_shortened_url( $value ) {
 
 	$pattern = '/(' . implode( '|', $shorteners ) . ')/i';
 
-	if ( preg_match( $pattern, $value ) ) {
-		return true;
-	}
-
-	// Structurele herkenning, ongeacht de naam van de dienst.
-	if ( preg_match_all( '#https?://[a-z0-9.-]+\.[a-z]{2,10}/([A-Za-z0-9]{4,10})(?=[?#]|$|\s)#i', $value, $matches ) ) {
-		foreach ( $matches[1] as $slug ) {
-			// Volledig kleine letters is een normaal, door mensen
-			// geschreven URL-pad. Cijfers of hoofdletters erin zijn
-			// typisch voor een gegenereerde shortener-code.
-			if ( ! preg_match( '/^[a-z]+$/', $slug ) ) {
-				return true;
-			}
-		}
-	}
-
-	return false;
+	return (bool) preg_match( $pattern, $value );
 }
 
 /**
